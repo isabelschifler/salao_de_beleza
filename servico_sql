@@ -1,0 +1,24 @@
+-- 03 - Tabela SERVICO (catálogo de serviços)
+
+USE salao_beleza;
+
+CREATE TABLE IF NOT EXISTS servico (
+    codigo_servico  INT AUTO_INCREMENT PRIMARY KEY,
+    nome            VARCHAR(80) NOT NULL,
+    descricao       VARCHAR(255),
+    duracao_minutos INT NOT NULL,
+    valor           DECIMAL(10,2) NOT NULL
+);
+
+-- 03 - Dados de teste: SERVICO (catálogo)
+-- (rode UMA vez só; rodar de novo duplica os dados)
+USE salao_beleza;
+
+INSERT INTO servico (nome, descricao, duracao_minutos, valor) VALUES
+('Corte feminino',  'Corte e finalização',    60,  80.00),
+('Hidratação',      'Hidratação profunda',    45,  60.00),
+('Manicure',        'Esmaltação em gel',      40,  50.00),
+('Pedicure',        'Pedicure completa',      50,  55.00),
+('Limpeza de pele', 'Limpeza facial profunda', 70, 120.00);
+
+SELECT * FROM servico;
