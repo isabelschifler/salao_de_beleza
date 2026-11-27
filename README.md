@@ -52,9 +52,9 @@ O banco tem **5 entidades** (profissional, cliente, serviço, agendamento, pagam
 | `04` agendamento | tabela `agendamento` + dados de teste |
 | `05` agendamento_servico | tabela de ligação + dados de teste |
 | `06` pagamento | tabela `pagamento` + dados de teste |
-| `08` requisitos do projeto | itens 2 a 11 (normalização, álgebra, ALTER TABLE, DML, view, função, procedure, trigger, índice, transação) |
+| `07` requisitos do projeto | itens 2 a 11 (normalização, álgebra, ALTER TABLE, DML, view, função, procedure, trigger, índice, transação) |
 
-**Ordem de execução:** banco, depois `01` a `06` (nessa ordem, pois as tabelas dependem umas das outras), e por último o `08`.
+**Ordem de execução:** banco, depois `01` a `06` (nessa ordem, pois as tabelas dependem umas das outras), e por último o `07`.
 
 ---
 
