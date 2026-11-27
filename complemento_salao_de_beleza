@@ -1,0 +1,430 @@
+-- =====================================================================
+-- 08 - REQUISITOS DO PROJETO - SALÃO DE BELEZA
+-- Itens 3 a 11. (Item 1 = MER no draw.io; item 2 = modelo relacional,
+-- que são as próprias tabelas dos arquivos de criação.)
+-- Rode DEPOIS dos arquivos das tabelas (a view e o usuário recepcao agora são criados aqui, no ITEM 7).
+-- Requer MySQL 8.0.16 ou mais novo (por causa do CHECK).
+-- O ITEM 5 (ALTER TABLE) roda UMA vez só.
+-- Para os blocos com DELIMITER, use o MySQL Workbench ou o cliente "mysql".
+-- =====================================================================
+USE salao_beleza;
+
+-- =====================================================================
+-- ITEM 3 - NORMALIZAÇÃO (até a 3FN)
+-- 1FN: todas as colunas guardam um único valor (nada de listas).
+-- 2FN: a única chave composta é a de agendamento_servico, e
+--      valor_cobrado depende do par (agendamento, serviço) inteiro.
+-- 3FN: em todas as tabelas, cada coluna depende só da chave primária.
+--      Ex.: o nome do cliente e da profissional NÃO se repetem em
+--      agendamento; ficam nas suas tabelas e são buscados por JOIN.
+--
+-- DECISÃO DE NORMALIZAÇÃO: tabela agendamento_servico.
+-- Problema evitado: guardar os serviços dentro de agendamento, em
+-- colunas servico1, servico2, servico3. Isso quebra a 1FN: limita a 3
+-- serviços, deixa colunas vazias e complica consultas como "quem fez
+-- Manicure?". Com a tabela de ligação, cada serviço é uma linha, sem
+-- limite e sem desperdício.
+-- Decisão relacionada: valor_cobrado guarda o preço do momento. Se o
+-- preço do catálogo (servico.valor) mudar, o histórico não muda.
+-- (demonstrado no UPDATE do ITEM 6)
+-- =====================================================================
+
+-- =====================================================================
+-- ITEM 4 - ÁLGEBRA RELACIONAL
+-- Símbolos: σ seleção (WHERE) | π projeção (SELECT) | ⨝ junção (JOIN)
+--           γ agrupamento (GROUP BY com SUM, COUNT...)
+--
+-- CONSULTA 1 - agenda de um dia
+--   π c.nome, a.horario, p.nome, a.status (
+--     σ a.data_agendamento = '2026-10-05' (
+--       (Agendamento a ⨝ a.codigo_cliente = c.codigo_cliente Cliente c)
+--         ⨝ a.codigo_profissional = p.codigo_profissional Profissional p ) )
+--   SQL:
+--   SELECT c.nome, a.horario, p.nome, a.status
+--   FROM agendamento a
+--   JOIN cliente c      ON a.codigo_cliente = c.codigo_cliente
+--   JOIN profissional p ON a.codigo_profissional = p.codigo_profissional
+--   WHERE a.data_agendamento = '2026-10-05';
+--   Esperado: Ana Paula | 14:00 | Camila Souza | Concluído
+--
+-- CONSULTA 2 - receita por profissional, só a partir de 100  (EXPLICADA)
+--   σ receita >= 100 (
+--     p.codigo_profissional, p.nome γ SUM(asv.valor_cobrado) → receita (
+--       σ a.status = 'Concluído' (
+--         (Profissional p ⨝ p.codigo_profissional = a.codigo_profissional Agendamento a)
+--           ⨝ a.codigo_agendamento = asv.codigo_agendamento AgendamentoServico asv ) ) )
+--   SQL: é a consulta com GROUP BY/HAVING do ITEM 6.
+--   Esperado: Camila Souza | 140.00
+--   Explicação:
+--   1) Junções: ligam a profissional aos seus agendamentos e aos serviços
+--      de cada um. Cada linha = "profissional + um serviço feito".
+--      O agendamento 1 (corte + hidratação) gera 2 linhas.
+--   2) Seleção (status = 'Concluído'): só atendimento realizado vira
+--      receita. Sobram o agendamento 1 (Camila, 80 + 60) e o 2 (Fernanda, 50).
+--   3) Agrupamento (γ): soma o valor_cobrado por profissional.
+--      Camila = 140, Fernanda = 50.
+--   4) Seleção final (receita >= 100): é o HAVING. Vem depois do
+--      agrupamento porque filtra o resultado da soma. Fernanda sai.
+--
+-- CONSULTA 3 - clientes com pagamento pendente
+--   π c.nome, a.data_agendamento, pg.valor (
+--     σ pg.status = 'Pendente' (
+--       (Cliente c ⨝ c.codigo_cliente = a.codigo_cliente Agendamento a)
+--         ⨝ a.codigo_agendamento = pg.codigo_agendamento Pagamento pg ) )
+--   SQL:
+--   SELECT c.nome, a.data_agendamento, pg.valor
+--   FROM cliente c
+--   JOIN agendamento a ON a.codigo_cliente = c.codigo_cliente
+--   JOIN pagamento pg  ON pg.codigo_agendamento = a.codigo_agendamento
+--   WHERE pg.status = 'Pendente';
+--   Esperado (dados originais): Ana Paula | 2026-10-08 | 80.00
+-- =====================================================================
+
+-- =====================================================================
+-- ITEM 5 - DDL: ALTER TABLE (UNIQUE e CHECK = regras de negócio)
+-- =====================================================================
+
+-- E-mail não pode se repetir (NULL pode: nem todo mundo informa e-mail)
+ALTER TABLE cliente
+    ADD CONSTRAINT uq_cliente_email UNIQUE (email);
+
+ALTER TABLE profissional
+    ADD CONSTRAINT uq_profissional_email UNIQUE (email);
+
+-- Serviço precisa ter duração positiva e valor não negativo
+ALTER TABLE servico
+    ADD CONSTRAINT chk_servico_duracao CHECK (duracao_minutos > 0),
+    ADD CONSTRAINT chk_servico_valor   CHECK (valor >= 0);
+
+-- Agendamento só pode ter um dos três status do salão
+ALTER TABLE agendamento
+    ADD CONSTRAINT chk_agendamento_status
+    CHECK (status IN ('Agendado', 'Concluído', 'Cancelado'));
+
+ALTER TABLE agendamento_servico
+    ADD CONSTRAINT chk_as_valor CHECK (valor_cobrado >= 0);
+
+-- Pagamento: valor positivo, status e forma válidos,
+-- e "Pago" obrigatoriamente com data de pagamento
+ALTER TABLE pagamento
+    ADD CONSTRAINT chk_pagamento_valor  CHECK (valor > 0),
+    ADD CONSTRAINT chk_pagamento_status CHECK (status IN ('Pendente', 'Pago', 'Cancelado')),
+    ADD CONSTRAINT chk_pagamento_forma  CHECK (forma_pagamento IS NULL
+                                               OR forma_pagamento IN ('Pix', 'Cartão', 'Dinheiro')),
+    ADD CONSTRAINT chk_pagamento_data   CHECK (status <> 'Pago' OR data_pagamento IS NOT NULL);
+
+-- =====================================================================
+-- ITEM 6 - DML - INSERT, UPDATE, DELETE e SELECTs
+-- (O povoamento das tabelas com INSERT está nos arquivos de cada tabela.)
+-- =====================================================================
+
+-- INSERT: novo cliente
+INSERT INTO cliente (nome, data_nascimento, email, telefone)
+VALUES ('Cliente Teste', '1999-01-15', 'teste@email.com', '(47) 98888-9999');
+
+-- UPDATE com WHERE: o preço do catálogo sobe...
+UPDATE servico SET valor = 85.00 WHERE nome = 'Corte feminino';
+
+-- ...mas o que já foi cobrado no passado continua 80.00 (valor_cobrado)
+SELECT s.nome, s.valor AS preco_atual_catalogo, asv.valor_cobrado AS cobrado_no_agendamento_1
+FROM servico s
+JOIN agendamento_servico asv ON asv.codigo_servico = s.codigo_servico
+WHERE asv.codigo_agendamento = 1 AND s.nome = 'Corte feminino';
+
+-- voltando o preço ao original
+UPDATE servico SET valor = 80.00 WHERE nome = 'Corte feminino';
+
+-- DELETE com WHERE: remove o cliente de teste (ele não tem agendamentos)
+DELETE FROM cliente WHERE email = 'teste@email.com';
+
+-- SELECT com WHERE
+SELECT nome, duracao_minutos, valor
+FROM servico
+WHERE valor > 50;
+
+-- SELECT com ORDER BY
+SELECT nome, valor
+FROM servico
+ORDER BY valor DESC;
+
+-- SELECT com JOIN (agenda de um dia)
+SELECT c.nome AS cliente, a.horario, p.nome AS profissional, a.status
+FROM agendamento a
+JOIN cliente c      ON a.codigo_cliente = c.codigo_cliente
+JOIN profissional p ON a.codigo_profissional = p.codigo_profissional
+WHERE a.data_agendamento = '2026-10-05'
+ORDER BY a.horario;
+
+-- SELECT com SUBCONSULTA: serviços mais caros que a média do catálogo
+SELECT nome, valor
+FROM servico
+WHERE valor > (SELECT AVG(valor) FROM servico);
+
+-- SELECT com SUBCONSULTA: clientes que já tiveram atendimento concluído
+SELECT nome
+FROM cliente
+WHERE codigo_cliente IN (SELECT codigo_cliente
+                         FROM agendamento
+                         WHERE status = 'Concluído');
+
+-- SELECT com GROUP BY e HAVING: receita por profissional (só >= 100)
+SELECT p.nome AS profissional,
+       COUNT(DISTINCT a.codigo_agendamento) AS atendimentos,
+       SUM(asv.valor_cobrado)               AS receita
+FROM profissional p
+JOIN agendamento a           ON a.codigo_profissional = p.codigo_profissional
+JOIN agendamento_servico asv ON asv.codigo_agendamento = a.codigo_agendamento
+WHERE a.status = 'Concluído'
+GROUP BY p.codigo_profissional, p.nome
+HAVING SUM(asv.valor_cobrado) >= 100;
+
+-- =====================================================================
+-- ITEM 7 - VIEW: vw_agenda_recepcao + usuário da recepção
+-- Contexto: a recepcionista precisa ver a agenda do dia (cliente,
+-- profissional, serviços, total e situação do pagamento), mas não deve
+-- ver nem alterar as tabelas originais. Por isso ela consulta só a view.
+-- =====================================================================
+
+-- Criação da view (junta 6 tabelas; GROUP_CONCAT lista os serviços numa
+-- linha só; COALESCE mostra 'Sem pagamento' quando não há pagamento)
+CREATE OR REPLACE VIEW vw_agenda_recepcao AS
+SELECT a.codigo_agendamento,
+       a.data_agendamento,
+       a.horario,
+       c.nome                                   AS cliente,
+       p.nome                                   AS profissional,
+       GROUP_CONCAT(s.nome ORDER BY s.nome SEPARATOR ', ') AS servicos,
+       SUM(asv.valor_cobrado)                   AS total_atendimento,
+       a.status                                 AS status_agendamento,
+       COALESCE(pg.status, 'Sem pagamento')     AS status_pagamento
+FROM agendamento a
+JOIN cliente c               ON a.codigo_cliente = c.codigo_cliente
+JOIN profissional p          ON a.codigo_profissional = p.codigo_profissional
+JOIN agendamento_servico asv ON a.codigo_agendamento = asv.codigo_agendamento
+JOIN servico s               ON asv.codigo_servico = s.codigo_servico
+LEFT JOIN pagamento pg       ON a.codigo_agendamento = pg.codigo_agendamento
+GROUP BY a.codigo_agendamento, a.data_agendamento, a.horario,
+         c.nome, p.nome, a.status, pg.status;
+
+-- Usuário da recepção: só pode consultar a view, nenhuma tabela original.
+-- (precisa vir DEPOIS da criação da view)
+CREATE USER IF NOT EXISTS 'recepcao'@'localhost' IDENTIFIED BY 'senha123';
+GRANT SELECT ON salao_beleza.vw_agenda_recepcao TO 'recepcao'@'localhost';
+FLUSH PRIVILEGES;
+
+-- Testando a view
+SELECT * FROM vw_agenda_recepcao;
+
+-- Quem ainda precisa pagar (atendimentos que não foram cancelados)
+SELECT codigo_agendamento, data_agendamento, cliente,
+       total_atendimento, status_pagamento
+FROM vw_agenda_recepcao
+WHERE status_agendamento <> 'Cancelado'
+  AND status_pagamento IN ('Pendente', 'Sem pagamento')
+ORDER BY data_agendamento;
+
+-- =====================================================================
+-- ITEM 8 - FUNCTION - total de um agendamento
+-- Soma o valor_cobrado de todos os serviços do agendamento.
+-- Retorna 0 se o agendamento não existir ou não tiver serviços.
+-- =====================================================================
+DROP FUNCTION IF EXISTS fn_total_agendamento;
+
+DELIMITER $$
+CREATE FUNCTION fn_total_agendamento(p_codigo_agendamento INT)
+RETURNS DECIMAL(10,2)
+READS SQL DATA
+BEGIN
+    DECLARE v_total DECIMAL(10,2);
+
+    SELECT COALESCE(SUM(valor_cobrado), 0)
+      INTO v_total
+      FROM agendamento_servico
+     WHERE codigo_agendamento = p_codigo_agendamento;
+
+    RETURN v_total;
+END$$
+DELIMITER ;
+
+-- Como executar (esperado: 140.00, 50.00, 80.00, 120.00, 55.00, e 0.00 para o 999)
+SELECT fn_total_agendamento(1) AS total_ag1;
+SELECT codigo_agendamento, fn_total_agendamento(codigo_agendamento) AS total
+FROM agendamento;
+SELECT fn_total_agendamento(999) AS inexistente;
+
+-- =====================================================================
+-- ITEM 8 - STORED PROCEDURE - registrar pagamento de um agendamento
+-- Regras: agendamento deve existir e não estar cancelado, ter serviços e
+-- ainda não estar pago. Se já existe pagamento "Pendente", ele é
+-- quitado; se não existe pagamento, ele é criado.
+-- Tudo dentro de uma transação: ou grava certo, ou desfaz.
+-- =====================================================================
+DROP PROCEDURE IF EXISTS sp_registrar_pagamento;
+
+DELIMITER $$
+CREATE PROCEDURE sp_registrar_pagamento(
+    IN p_codigo_agendamento INT,
+    IN p_forma_pagamento    VARCHAR(30)
+)
+BEGIN
+    DECLARE v_total      DECIMAL(10,2);
+    DECLARE v_status_ag  VARCHAR(20);
+    DECLARE v_status_pag VARCHAR(20);
+
+    -- Qualquer erro: desfaz tudo e repassa o erro para quem chamou
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    START TRANSACTION;
+
+    SELECT status INTO v_status_ag
+      FROM agendamento
+     WHERE codigo_agendamento = p_codigo_agendamento
+       FOR UPDATE;
+
+    IF v_status_ag IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Agendamento não encontrado.';
+    ELSEIF v_status_ag = 'Cancelado' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Agendamento cancelado não pode ser pago.';
+    END IF;
+
+    SET v_total = fn_total_agendamento(p_codigo_agendamento);
+    IF v_total <= 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Agendamento sem serviços.';
+    END IF;
+
+    SELECT status INTO v_status_pag
+      FROM pagamento
+     WHERE codigo_agendamento = p_codigo_agendamento
+       FOR UPDATE;
+
+    IF v_status_pag IS NULL THEN
+        INSERT INTO pagamento (data_pagamento, valor, forma_pagamento, status, codigo_agendamento)
+        VALUES (CURDATE(), v_total, p_forma_pagamento, 'Pago', p_codigo_agendamento);
+    ELSEIF v_status_pag = 'Pago' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Este agendamento já foi pago.';
+    ELSE
+        UPDATE pagamento
+           SET data_pagamento  = CURDATE(),
+               valor           = v_total,
+               forma_pagamento = p_forma_pagamento,
+               status          = 'Pago'
+         WHERE codigo_agendamento = p_codigo_agendamento;
+    END IF;
+
+    COMMIT;
+
+    SELECT * FROM pagamento WHERE codigo_agendamento = p_codigo_agendamento;
+END$$
+DELIMITER ;
+
+-- Como executar:
+-- Agendamento 3 tinha pagamento Pendente -> vira Pago, valor 80.00, data de hoje
+CALL sp_registrar_pagamento(3, 'Pix');
+-- Agendamento 4 não tinha pagamento -> cria um novo, valor 120.00, status Pago
+CALL sp_registrar_pagamento(4, 'Cartão');
+
+-- Casos de erro (descomente UM por vez; o erro é o resultado esperado):
+-- CALL sp_registrar_pagamento(3, 'Pix');   -- Este agendamento já foi pago.
+-- CALL sp_registrar_pagamento(5, 'Pix');   -- Agendamento cancelado não pode ser pago.
+-- CALL sp_registrar_pagamento(999, 'Pix'); -- Agendamento não encontrado.
+
+-- =====================================================================
+-- ITEM 9 - TRIGGER - impede dois atendimentos da mesma profissional no
+-- mesmo dia e horário (regra de negócio: ninguém atende duas pessoas
+-- ao mesmo tempo). Agendamentos cancelados não contam.
+-- =====================================================================
+DROP TRIGGER IF EXISTS trg_agendamento_sem_conflito;
+
+DELIMITER $$
+CREATE TRIGGER trg_agendamento_sem_conflito
+BEFORE INSERT ON agendamento
+FOR EACH ROW
+BEGIN
+    IF NEW.status <> 'Cancelado' AND EXISTS (
+        SELECT 1
+          FROM agendamento
+         WHERE codigo_profissional = NEW.codigo_profissional
+           AND data_agendamento    = NEW.data_agendamento
+           AND horario             = NEW.horario
+           AND status <> 'Cancelado'
+    ) THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Conflito: a profissional já tem atendimento neste dia e horário.';
+    END IF;
+END$$
+DELIMITER ;
+
+-- Demonstração (descomente): Camila já atende dia 08/10 às 16:00 (agendamento 3)
+-- INSERT INTO agendamento (data_agendamento, horario, status, codigo_profissional, codigo_cliente)
+-- VALUES ('2026-10-08', '16:00:00', 'Agendado', 1, 2);
+-- Esperado: ERROR 1644 (45000): Conflito: a profissional já tem atendimento neste dia e horário.
+
+-- Mesmo dia, horário livre: funciona (e depois removemos o teste)
+INSERT INTO agendamento (data_agendamento, horario, status, observacoes, codigo_profissional, codigo_cliente)
+VALUES ('2026-10-08', '17:00:00', 'Agendado', 'Teste do trigger', 1, 2);
+DELETE FROM agendamento WHERE observacoes = 'Teste do trigger';
+
+-- =====================================================================
+-- ITEM 10 - ÍNDICE
+-- Consultas por dia (agenda da recepção) filtram por data_agendamento e
+-- ordenam por horario. O índice composto guarda os agendamentos já
+-- organizados por (data, horário), evitando ler a tabela inteira.
+-- =====================================================================
+CREATE INDEX idx_agendamento_data_horario
+    ON agendamento (data_agendamento, horario);
+
+-- ANTES (ignorando o índice): esperado type = ALL (lê a tabela toda)
+EXPLAIN SELECT codigo_agendamento, horario, status
+FROM agendamento IGNORE INDEX (idx_agendamento_data_horario)
+WHERE data_agendamento = '2026-10-05'
+ORDER BY horario;
+
+-- DEPOIS (usando o índice): esperado type = ref, key = idx_agendamento_data_horario
+EXPLAIN SELECT codigo_agendamento, horario, status
+FROM agendamento FORCE INDEX (idx_agendamento_data_horario)
+WHERE data_agendamento = '2026-10-05'
+ORDER BY horario;
+
+-- =====================================================================
+-- ITEM 11 - TRANSAÇÃO - marcar um atendimento (agendamento + serviços)
+-- As duas inserções precisam acontecer juntas: ou entram as duas, ou nenhuma.
+-- =====================================================================
+
+-- (A) COMMIT: tudo deu certo, grava de forma definitiva
+START TRANSACTION;
+
+INSERT INTO agendamento (data_agendamento, horario, status, observacoes, codigo_profissional, codigo_cliente)
+VALUES ('2026-10-15', '11:00:00', 'Agendado', 'Manicure e pedicure', 2, 4);
+
+SET @novo = LAST_INSERT_ID();
+
+-- copia o preço atual de cada serviço para valor_cobrado
+INSERT INTO agendamento_servico (codigo_agendamento, codigo_servico, valor_cobrado)
+SELECT @novo, codigo_servico, valor
+FROM servico
+WHERE codigo_servico IN (3, 4);
+
+COMMIT;
+
+SELECT * FROM vw_agenda_recepcao WHERE codigo_agendamento = @novo;  -- total esperado: 105.00
+
+-- (B) ROLLBACK: desistiu (ou deu erro), desfaz tudo
+SELECT COUNT(*) AS agendamentos_antes FROM agendamento;
+
+START TRANSACTION;
+
+INSERT INTO agendamento (data_agendamento, horario, status, observacoes, codigo_profissional, codigo_cliente)
+VALUES ('2026-10-16', '09:30:00', 'Agendado', 'Teste de rollback', 3, 2);
+
+INSERT INTO agendamento_servico (codigo_agendamento, codigo_servico, valor_cobrado)
+VALUES (LAST_INSERT_ID(), 5, 120.00);
+
+SELECT COUNT(*) AS agendamentos_dentro_da_transacao FROM agendamento;  -- +1 (só nesta conexão)
+
+ROLLBACK;
+
+SELECT COUNT(*) AS agendamentos_depois FROM agendamento;  -- igual ao "antes"
